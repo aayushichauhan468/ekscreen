@@ -1,0 +1,14 @@
+{
+  "name": "ekscreen",
+  "private": true,
+  "version": "0.1.0",
+  "description": "EkScreen - watch YouTube together, perfectly in sync.",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently -n server,client -c green,yellow \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix server && npm run build --prefix client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
