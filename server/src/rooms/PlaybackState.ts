@@ -11,10 +11,15 @@ import type { PlaybackAction, PlayState, SyncState } from "../types/domain.js";
  * the exact position by itself.
  */
 export class PlaybackState {
-  private videoId: string | null = null;
+  private videoId: string | null;
   private playState: PlayState = "paused";
   private position = 0; // seconds, valid at `updatedAt`
   private updatedAt = Date.now(); // ms
+
+  /** `initialVideoId` is what a brand-new room shows before anyone changes the video. */
+  constructor(initialVideoId: string | null = null) {
+    this.videoId = initialVideoId;
+  }
 
   currentTime(now: number): number {
     if (this.playState !== "playing") return this.position;

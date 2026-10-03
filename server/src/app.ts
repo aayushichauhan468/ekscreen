@@ -11,8 +11,9 @@ import type { ClientToServerEvents, ServerToClientEvents } from "./types/events.
  * Builds the HTTP + WebSocket server WITHOUT starting it, so index.ts can listen on
  * a fixed port and the test script can start its own copy on a random port.
  */
-export function createApp(options: { clientOrigin?: string } = {}) {
+export function createApp(options: { clientOrigin?: string; reconnectGraceMs?: number } = {}) {
   const clientOrigin = options.clientOrigin ?? config.clientOrigin;
+  const reconnectGraceMs = options.reconnectGraceMs ?? config.reconnectGraceMs;
 
   const app = express();
   app.use(cors({ origin: clientOrigin }));
@@ -34,7 +35,7 @@ export function createApp(options: { clientOrigin?: string } = {}) {
     maxHttpBufferSize: 16 * 1024, // events are tiny; refuse oversized messages
   });
 
-  const handler = new MessageHandler(io, rooms);
+  const handler = new MessageHandler(io, rooms, reconnectGraceMs);
   io.on("connection", (socket) => {
     console.log(`[EkScreen] client connected: ${socket.id}`);
     handler.register(socket);

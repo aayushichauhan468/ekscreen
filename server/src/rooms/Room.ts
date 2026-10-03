@@ -1,10 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { AppError } from "../errors.js";
-import type { PendingRequest, PlaybackAction, PublicParticipant, Role, SyncState } from "../types/domain.js";
+import type {
+  ChatMessage,
+  PendingRequest,
+  PlaybackAction,
+  PublicParticipant,
+  ReactionEmoji,
+  Role,
+  SyncState,
+} from "../types/domain.js";
 import { Participant } from "./Participant.js";
 import { PlaybackState } from "./PlaybackState.js";
 import { DENIED_MESSAGE, hasPermission, type Permission } from "./permissions.js";
+import { RateLimiter } from "./RateLimiter.js";
 
 /** What changed when someone leaves, so the caller can broadcast the right events. */
 export interface Departure {
@@ -19,9 +28,12 @@ export interface Departure {
  * Every method that changes something takes the `actorId` and checks permissions itself.
  */
 export class Room {
-  private readonly playback = new PlaybackState();
+  private readonly playback = new PlaybackState(config.defaultVideoId); // new rooms start on the starter video
   private readonly participants = new Map<string, Participant>(); // Map keeps join order
   private readonly requests = new Map<string, PendingRequest>();
+  private readonly chat: ChatMessage[] = []; // newest last, capped at config.chatHistoryLimit
+  private readonly chatLimiter = new RateLimiter(config.chatRateLimit.max, config.chatRateLimit.windowMs);
+  private readonly reactionLimiter = new RateLimiter(config.reactionRateLimit.max, config.reactionRateLimit.windowMs);
 
   constructor(readonly id: string) {}
 
@@ -32,20 +44,51 @@ export class Room {
   // ---------- members ----------
 
   /** The first person in becomes Host; everyone after is a Participant. */
-  addParticipant(id: string, username: string): Participant {
+  addParticipant(socketId: string, username: string, avatar: string | null = null): Participant {
     if (this.participants.size >= config.maxParticipantsPerRoom) {
       throw new AppError("ROOM_FULL", "This room is full.");
     }
     const role: Role = this.participants.size === 0 ? "host" : "participant";
-    const participant = new Participant(id, username, role);
-    this.participants.set(id, participant);
+    const participant = new Participant(socketId, username, role, avatar);
+    this.participants.set(participant.id, participant);
     return participant;
+  }
+
+  /** Finds the person who owns this secret token (used when rejoining after a refresh). */
+  findByToken(token: string): Participant | undefined {
+    const given = Buffer.from(token);
+    for (const p of this.participants.values()) {
+      const real = Buffer.from(p.token);
+      if (real.length === given.length && timingSafeEqual(real, given)) return p; // constant-time compare
+    }
+    return undefined;
+  }
+
+  has(userId: string): boolean {
+    return this.participants.has(userId);
+  }
+
+  /** Looks a person up by id (throws USER_NOT_FOUND if they are not here). */
+  member(userId: string): Participant {
+    return this.get(userId);
+  }
+
+  /** The person's browser connected (or reconnected) on this socket. */
+  attachSocket(userId: string, socketId: string): void {
+    this.get(userId).socketId = socketId;
+  }
+
+  /** The person's connection dropped. They keep their seat for a grace period. */
+  detachSocket(userId: string): void {
+    this.get(userId).socketId = null;
   }
 
   /** Removes someone. If the Host leaves, the first Moderator (else the longest-present person) becomes Host. */
   removeParticipant(userId: string): Departure {
     const leaving = this.get(userId);
     this.participants.delete(userId);
+    this.chatLimiter.forget(userId);
+    this.reactionLimiter.forget(userId);
 
     const cancelledRequests = [...this.requests.values()].filter((r) => r.userId === userId);
     cancelledRequests.forEach((r) => this.requests.delete(r.id));
@@ -53,7 +96,9 @@ export class Room {
     let newHost: Participant | null = null;
     if (leaving.role === "host" && this.participants.size > 0) {
       const remaining = [...this.participants.values()];
-      newHost = remaining.find((p) => p.role === "moderator") ?? remaining[0];
+      const online = remaining.filter((p) => p.online);
+      const pool = online.length > 0 ? online : remaining; // prefer someone who is actually here
+      newHost = pool.find((p) => p.role === "moderator") ?? pool[0];
       newHost.role = "host";
     }
     return { leaving, newHost, cancelledRequests };
@@ -100,6 +145,35 @@ export class Room {
     return this.playback.snapshot(now);
   }
 
+  // ---------- chat and reactions ----------
+  // Every role may chat and react, so there is no permission check here: being IN the room is enough
+  // (this.get throws if the person is not a member). Rate limits protect the room from flooding.
+
+  /** Stores a chat line and returns it for broadcasting. The id and time are made here, never by the client. */
+  postChat(userId: string, text: string, now = Date.now()): ChatMessage {
+    const me = this.get(userId);
+    if (!this.chatLimiter.tryConsume(userId, now)) {
+      throw new AppError("RATE_LIMITED", "You're sending messages too fast. Slow down a little.");
+    }
+    const message: ChatMessage = { id: randomUUID().slice(0, 8), userId, username: me.username, text, sentAt: now };
+    this.chat.push(message);
+    if (this.chat.length > config.chatHistoryLimit) this.chat.shift(); // drop the oldest
+    return message;
+  }
+
+  /** Reactions are not stored (they are just a moment on screen). Returns who sent it. */
+  react(userId: string, emoji: ReactionEmoji, now = Date.now()): { id: string; participant: Participant; emoji: ReactionEmoji } {
+    const participant = this.get(userId);
+    if (!this.reactionLimiter.tryConsume(userId, now)) {
+      throw new AppError("RATE_LIMITED", "Easy on the reactions!");
+    }
+    return { id: randomUUID().slice(0, 8), participant, emoji };
+  }
+
+  chatHistory(): ChatMessage[] {
+    return [...this.chat]; // a copy, so callers can't change our list
+  }
+
   // ---------- approval requests ----------
 
   /** A Participant asks for a change. One waiting request per person keeps the Host's list clean. */
@@ -144,9 +218,11 @@ export class Room {
     return [...this.participants.values()].map((p) => p.toPublic());
   }
 
-  /** Socket ids of everyone who may approve requests (so we notify only them). */
-  resolverIds(): string[] {
-    return [...this.participants.values()].filter((p) => hasPermission(p.role, "resolve_requests")).map((p) => p.id);
+  /** Connections of everyone who may approve requests (so we notify only them). */
+  resolverSocketIds(): string[] {
+    return [...this.participants.values()]
+      .filter((p) => hasPermission(p.role, "resolve_requests") && p.socketId !== null)
+      .map((p) => p.socketId as string);
   }
 
   canResolve(userId: string): boolean {

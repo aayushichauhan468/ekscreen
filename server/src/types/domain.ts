@@ -14,7 +14,17 @@ export interface PublicParticipant {
   username: string;
   role: Role;
   joinedAt: number;
+  online: boolean; // false while disconnected but still inside the reconnect grace period
+  avatar: string | null; // the face this person picked, e.g. "2-2-1-3-1-0-4-2" (null = client draws one from the userId)
 }
+
+/**
+ * An avatar is 8 numbers joined by "-": skin, hair style, hair colour, outfit colour, eyes, mouth,
+ * accessory, background. These are how many choices each part has. The client draws the face; the
+ * server only checks that every number is in range, so a client can never store arbitrary text here.
+ * IMPORTANT: keep this list equal to PART_COUNTS in client/src/lib/avatarConfig.ts.
+ */
+export const AVATAR_PART_COUNTS = [6, 9, 6, 6, 4, 4, 8, 6] as const;
 
 /** Snapshot of the video, computed at `serverTime`. */
 export interface SyncState {
@@ -31,4 +41,17 @@ export interface PendingRequest {
   username: string;
   action: PlaybackAction;
   createdAt: number;
+}
+
+/** The only reactions allowed. The Zod schema and the client buttons both use this one list. */
+export const REACTION_EMOJIS = ["❤️", "😂", "😮", "👏", "🔥", "🎉"] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+/** One chat line. The server creates the id and time, so a client can never fake them. */
+export interface ChatMessage {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  sentAt: number; // ms since epoch
 }

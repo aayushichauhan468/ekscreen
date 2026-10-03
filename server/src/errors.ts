@@ -9,6 +9,8 @@ export type ErrorCode =
   | "INVALID_TARGET"
   | "REQUEST_NOT_FOUND"
   | "REQUEST_PENDING"
+  | "INVALID_SESSION"
+  | "RATE_LIMITED"
   | "INTERNAL";
 
 /** An expected, user-facing error. Anything else is treated as a server bug (INTERNAL). */
