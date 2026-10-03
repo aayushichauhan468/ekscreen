@@ -6,8 +6,7 @@ EkScreen is a real-time YouTube watch party. Create a room, share the code, and 
 the same video state (play, pause, seek position, current video) at the same time. Rooms have roles
 (Host, Moderator, Participant), live chat and emoji reactions.
 
-> **Live URL:** _to be added after deployment_ (see [Deployment](#deployment))
-
+> **Live URL:** https://ekscreen.vercel.app
 ## Features
 
 | Area | What works |
@@ -148,3 +147,8 @@ URLs in the table below once the app is live.
 - **Stable layout:** the hero card on the right is `position: sticky` and centred in the window, so it does not
   move when the form opens or the page scrolls.
 - **Full screen:** the browser's Fullscreen API is used on the video box, not on the YouTube iframe, so toasts and chat previews still appear.
+
+| Item | URL |
+|---|---|
+| Frontend (live app) | https://ekscreen.vercel.app |
+| Backend health check | https://ekscreen.onrender.com/health |
